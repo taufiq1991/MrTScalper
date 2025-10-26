@@ -1,4 +1,4 @@
-ETHUSDT: Crypto Signal Bot
+name: Crypto Signal Bot
 
 on:
   schedule:
@@ -12,7 +12,7 @@ jobs:
     env:
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      SYMBOLS: "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,DOGEUSDT"
+      SYMBOLS: "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,TRXUSDT,MATICUSDT"
       TIMEFRAMES: "1m,5m,15m"
 
     steps:
