@@ -1,30 +1,32 @@
-name: Crypto Signal Bot (Combo Mode)
+name: Crypto Signal Bot (Semi-Realtime)
 
 on:
   schedule:
-    - cron: "*/1 * * * *"  # setiap 1 menit
+    - cron: "* * * * *"  # jalan tiap 1 menit
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  run:
     runs-on: ubuntu-latest
-    env:
-      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      SYMBOLS: "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,TRXUSDT,MATICUSDT"
-      TIMEFRAMES: "1m,3m,5m"
-
+    timeout-minutes: 9  # biar tidak melebihi limit GitHub
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install python-binance pandas ta python-telegram-bot
 
-      - name: Run bot
-        run: python bot.py
+      - name: Jalankan bot sinyal
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+        run: |
+          python bot.py
