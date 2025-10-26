@@ -2,7 +2,7 @@ name: Crypto Signal Bot (Combo Mode)
 
 on:
   schedule:
-    - cron: "*/1 * * * *"  # setiap 5 menit
+    - cron: "*/1 * * * *"  # setiap 1 menit
   workflow_dispatch:
 
 jobs:
