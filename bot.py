@@ -3,13 +3,11 @@ import pandas as pd
 import ta
 import logging
 from datetime import datetime
-from binance.client import Client
+from binance import Client
 from telegram import Bot
 
 # --- Konfigurasi utama ---
-api_key = os.getenv("BINANCE_API_KEY")
-api_secret = os.getenv("BINANCE_API_SECRET")
-client = Client(api_key, api_secret)
+client = Client(None, None)  # Mode aman tanpa API key (public data only)
 
 bot_token = os.getenv("TELEGRAM_TOKEN")
 chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -20,16 +18,20 @@ TIMEFRAMES = ["1m", "3m", "5m"]
 
 logging.basicConfig(level=logging.INFO)
 
-# --- Fungsi ambil data Binance ---
+# --- Ambil data publik dari Binance ---
 def get_klines(symbol, interval):
-    klines = client.get_klines(symbol=symbol, interval=interval, limit=100)
-    df = pd.DataFrame(klines, columns=[
-        "open_time","open","high","low","close","volume","close_time",
-        "qav","num_trades","taker_base_vol","taker_quote_vol","ignore"
-    ])
-    df = df.astype(float)
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
-    return df
+    try:
+        klines = client.get_klines(symbol=symbol, interval=interval, limit=100)
+        df = pd.DataFrame(klines, columns=[
+            "open_time","open","high","low","close","volume","close_time",
+            "qav","num_trades","taker_base_vol","taker_quote_vol","ignore"
+        ])
+        df = df.astype(float)
+        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+        return df
+    except Exception as e:
+        logging.error(f"Gagal ambil data {symbol} ({interval}): {e}")
+        return None
 
 # --- Deteksi sinyal ---
 def detect_signal(df):
@@ -62,36 +64,36 @@ def detect_signal(df):
 
     return signal, strength
 
-# --- Kirim pesan ke Telegram ---
+# --- Kirim pesan Telegram ---
 def send_message(msg):
     try:
         bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"Telegram error: {e}")
 
-# --- Main loop ---
+# --- Main ---
 def main():
     total_signals = 0
     messages = []
 
     for symbol in SYMBOLS:
         for tf in TIMEFRAMES:
-            try:
-                df = get_klines(symbol, tf)
-                signal, strength = detect_signal(df)
-                if signal:
-                    total_signals += 1
-                    last = df.iloc[-1]
-                    emoji = "🟢" if signal == "BUY" else "🔴"
-                    msg = (
-                        f"{emoji} *{signal} Signal ({strength})*\n"
-                        f"Pair: `{symbol}` | TF: `{tf}`\n"
-                        f"Close: {last['close']:.2f} | RSI: {last['rsi']:.1f}\n"
-                        f"Time: {last['close_time'].strftime('%H:%M:%S UTC')}"
-                    )
-                    messages.append(msg)
-            except Exception as e:
-                logging.error(f"{symbol} {tf}: {e}")
+            df = get_klines(symbol, tf)
+            if df is None:
+                continue
+
+            signal, strength = detect_signal(df)
+            if signal:
+                total_signals += 1
+                last = df.iloc[-1]
+                emoji = "🟢" if signal == "BUY" else "🔴"
+                msg = (
+                    f"{emoji} *{signal} Signal ({strength})*\n"
+                    f"Pair: `{symbol}` | TF: `{tf}`\n"
+                    f"Close: {last['close']:.2f} | RSI: {last['rsi']:.1f}\n"
+                    f"Time: {last['close_time'].strftime('%H:%M:%S UTC')}"
+                )
+                messages.append(msg)
 
     if total_signals > 0:
         for m in messages:
