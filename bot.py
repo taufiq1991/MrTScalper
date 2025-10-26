@@ -6,7 +6,7 @@ import telegram
 import logging
 from datetime import datetime
 
-# --- Environment Variables from GitHub Secrets ---
+# --- ENV Variabel dari GitHub Secrets ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SYMBOLS = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,TRXUSDT,MATICUSDT").split(",")
@@ -17,16 +17,14 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
-# --- Utility Functions ---
+# --- Fungsi Utility ---
 def send_message(text):
-    """Kirim pesan ke Telegram"""
     try:
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"Telegram send failed: {e}")
 
 def get_klines(symbol, interval, limit=100):
-    """Ambil data candle dari Binance"""
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
     resp = requests.get(url, params=params, timeout=10)
@@ -58,7 +56,7 @@ def macd(series, fast=12, slow=26, signal=9):
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
     return macd_line, signal_line
 
-# --- Signal Detection ---
+# --- Deteksi Sinyal ---
 def detect_signal(df):
     df["ema9"] = ema(df["close"], 9)
     df["ema21"] = ema(df["close"], 21)
@@ -69,49 +67,60 @@ def detect_signal(df):
     prev = df.iloc[-2]
     last = df.iloc[-1]
 
-    # --- Volume Filter ---
+    # Volume filter
     avg_vol = df["volume"].rolling(20).mean().iloc[-1]
     last_vol = df["volume"].iloc[-1]
     vol_ratio = last_vol / avg_vol if avg_vol > 0 else 0
-    if vol_ratio < 1.5:
-        return None  # Volume rendah, abaikan sinyal
 
-    # --- EMA Cross + MACD + RSI + Trend Confirmation ---
+    # --- Base Cross ---
     signal = None
-    if (
-        prev["ema9"] <= prev["ema21"]
-        and last["ema9"] > last["ema21"]
-        and last["rsi14"] < 70
-        and last["macd"] > last["macd_signal"]
-        and last["close"] > last["ema50"]
-    ):
-        signal = "BUY"
+    strength = "Weak"
+    score = 0
 
-    elif (
-        prev["ema9"] >= prev["ema21"]
-        and last["ema9"] < last["ema21"]
-        and last["rsi14"] > 30
-        and last["macd"] < last["macd_signal"]
-        and last["close"] < last["ema50"]
-    ):
+    # --- BUY ---
+    if prev["ema9"] <= prev["ema21"] and last["ema9"] > last["ema21"] and last["rsi14"] < 70:
+        signal = "BUY"
+        score += 1
+        if last["macd"] > last["macd_signal"]:
+            score += 1
+        if vol_ratio > 1.2:
+            score += 1
+        if last["close"] > last["ema50"]:
+            score += 1
+
+    # --- SELL ---
+    elif prev["ema9"] >= prev["ema21"] and last["ema9"] < last["ema21"] and last["rsi14"] > 30:
         signal = "SELL"
+        score += 1
+        if last["macd"] < last["macd_signal"]:
+            score += 1
+        if vol_ratio > 1.2:
+            score += 1
+        if last["close"] < last["ema50"]:
+            score += 1
 
     if signal:
-        details = {
+        # Tentukan kekuatan sinyal berdasarkan skor
+        if score >= 4:
+            strength = "Strong"
+        elif score == 3:
+            strength = "Medium"
+        else:
+            strength = "Weak"
+
+        return signal, strength, {
             "rsi": last["rsi14"],
             "macd": last["macd"],
             "macd_signal": last["macd_signal"],
             "volume_ratio": vol_ratio,
-            "ema50": last["ema50"]
+            "ema50": last["ema50"],
         }
-        return signal, details
     return None
 
 # --- Main ---
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    start_msg = f"🚀 Bot sinyal trading aktif!\n📊 Memeriksa {len(SYMBOLS)} pair di timeframe {', '.join(TIMEFRAMES)}"
-    send_message(start_msg)
+    send_message(f"🚀 Bot sinyal trading (Combo Mode) aktif!\n📊 Memantau {len(SYMBOLS)} pair di timeframe {', '.join(TIMEFRAMES)}")
 
     total_signals = 0
     for symbol in SYMBOLS:
@@ -120,11 +129,12 @@ def main():
                 df = get_klines(symbol, tf)
                 result = detect_signal(df)
                 if result:
-                    signal, details = result
+                    signal, strength, details = result
                     total_signals += 1
                     last = df.iloc[-1]
+                    emoji = "🟢" if signal == "BUY" else "🔴"
                     msg = (
-                        f"*{signal} Signal*\n"
+                        f"{emoji} *{signal} Signal ({strength})*\n"
                         f"Pair: `{symbol}`\n"
                         f"Timeframe: `{tf}`\n"
                         f"Close: {last['close']:.4f}\n"
@@ -136,12 +146,11 @@ def main():
                         "_Info only — no auto order._"
                     )
                     send_message(msg)
-                    logging.info(f"{symbol} {tf} {signal}")
+                    logging.info(f"{symbol} {tf} {signal} ({strength})")
             except Exception as e:
                 logging.error(f"Error {symbol} {tf}: {e}")
 
-    end_msg = f"✅ Scan selesai. {total_signals} sinyal ditemukan."
-    send_message(end_msg)
+    send_message(f"✅ Scan selesai. {total_signals} sinyal ditemukan.")
 
 if __name__ == "__main__":
     main()
