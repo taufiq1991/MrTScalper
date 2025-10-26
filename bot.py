@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import os
-import time
 import requests
 import pandas as pd
 import telegram
@@ -10,7 +9,7 @@ from datetime import datetime
 # --- Environment Variables from GitHub Secrets ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-SYMBOLS = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT").split(",")
+SYMBOLS = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,TRXUSDT,MATICUSDT").split(",")
 TIMEFRAMES = os.getenv("TIMEFRAMES", "1m,5m,15m").split(",")
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -64,7 +63,7 @@ def detect_signal(df):
 # --- Main ---
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    start_msg = f"🚀 Bot sinyal trading aktif! Memeriksa {', '.join(SYMBOLS)} di timeframe {', '.join(TIMEFRAMES)}"
+    start_msg = f"🚀 Bot sinyal trading aktif!\n📊 Memeriksa {len(SYMBOLS)} pair di timeframe {', '.join(TIMEFRAMES)}"
     send_message(start_msg)
 
     total_signals = 0
