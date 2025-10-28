@@ -45,48 +45,43 @@ def send_message(msg):
 
 # === FUNGSI GET KLINES (BINANCE) ===
 def get_klines(symbol, interval, limit=200, retries=3, pause=1.5):
-    """
-    Mengambil data candlestick (klines) dari Binance dengan fallback aman untuk GitHub Actions.
-    Gunakan mirror resmi data-api.binance.vision agar tidak terkena blokir (451).
-    """
-    base_url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    """
+    Mengambil data candlestick (klines) dari Binance dengan fallback aman untuk GitHub Actions.
+    Gunakan mirror resmi data-api.binance.vision agar tidak terkena blokir (451).
+    """
+    base_url = "https://data-api.binance.vision/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
 
-    for attempt in range(retries):
-        try:
-            resp = requests.get(base_url, params=params, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
+    for attempt in range(retries):
+        try:
+            resp = requests.get(base_url, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
 
-            if not data:
-                logging.warning(f"Data kosong untuk {symbol}")
-                return pd.DataFrame()
+            if not data:
+                logging.warning(f"Data kosong untuk {symbol}")
+                return pd.DataFrame()
 
-            df = pd.DataFrame(data, columns=[
-                "open_time", "open", "high", "low", "close", "volume",
-                "close_time", "quote_asset_volume", "trades",
-                "taker_base_volume", "taker_quote_volume", "ignore"
-            ])
+            df = pd.DataFrame(data, columns=[
+                "open_time", "open", "high", "low", "close", "volume",
+                "close_time", "quote_asset_volume", "trades",
+                "taker_base_volume", "taker_quote_volume", "ignore"
+            ])
 
-            # konversi tipe data numerik
-            numeric_cols = ["open", "high", "low", "close", "volume"]
-            df[numeric_cols] = df[numeric_cols].astype(float)
-            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-            df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+            # konversi tipe data numerik
+            numeric_cols = ["open", "high", "low", "close", "volume"]
+            df[numeric_cols] = df[numeric_cols].astype(float)
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+            df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
 
-            return df
+            return df
 
-        except requests.exceptions.RequestException as e:
-            logging.error(f"get_klines gagal ({attempt+1}/{retries}) untuk {symbol} {interval}: {e}")
-            if attempt < retries - 1:
-                time.sleep(pause)
-            else:
-                return pd.DataFrame()
-
-    except Exception as e:
-        logging.error(f"[ERROR] get_klines gagal untuk {symbol} {interval}: {e}")
-        return pd.DataFrame()
-
+        except requests.exceptions.RequestException as e:
+            logging.error(f"get_klines gagal ({attempt+1}/{retries}) untuk {symbol} {interval}: {e}")
+            if attempt < retries - 1:
+                time.sleep(pause)
+            else:
+                return pd.DataFrame()
 # === FUNGSI DETEKSI SINYAL ===
 def detect_signal(df):
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
