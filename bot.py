@@ -64,26 +64,68 @@ def save_last_signals():
 
 # === GET KLINES (BINANCE) ===
 def get_klines(symbol, interval="15m", limit=200):
-    try:
-        url = "https://api.binance.com/api/v3/klines"
-        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+    """
+    Ambil data candlestick (klines) dari Binance.
+    Fitur:
+    - Otomatis ganti endpoint jika diblokir (HTTP 451)
+    - Retry otomatis hingga 3x per endpoint
+    """
+    endpoints = [
+        "https://api1.binance.com/api/v3/klines",   # Global mirror
+        "https://api2.binance.com/api/v3/klines",   # Asia mirror
+        "https://api.binance.me/api/v3/klines",     # Middle East
+        "https://fapi.binance.com/fapi/v1/klines"   # Futures API (backup)
+    ]
 
-        df = pd.DataFrame(data, columns=[
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_asset_volume", "trades",
-            "taker_base_volume", "taker_quote_volume", "ignore"
-        ])
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = df[col].astype(float)
-        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
-        return df
+    for url in endpoints:
+        for attempt in range(3):  # maksimal 3 percobaan per endpoint
+            try:
+                params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+                response = requests.get(url, params=params, timeout=10)
 
-    except Exception as e:
-        logging.error(f"[ERROR] get_klines gagal untuk {symbol} {interval}: {e}")
-        return pd.DataFrame()
+                # Jika diblokir (HTTP 451)
+                if response.status_code == 451:
+                    logging.warning(f"⚠️ Endpoint {url} diblokir (451) — mencoba endpoint lain...")
+                    break  # langsung ke endpoint berikutnya
+
+                response.raise_for_status()
+                data = response.json()
+
+                # Pastikan data valid
+                if not isinstance(data, list) or len(data) == 0:
+                    logging.warning(f"⚠️ Data kosong dari {url} untuk {symbol} ({interval}) — mencoba ulang...")
+                    time.sleep(2)
+                    continue
+
+                # Buat DataFrame
+                df = pd.DataFrame(data, columns=[
+                    "open_time", "open", "high", "low", "close", "volume",
+                    "close_time", "quote_asset_volume", "trades",
+                    "taker_base_volume", "taker_quote_volume", "ignore"
+                ])
+                for col in ["open", "high", "low", "close", "volume"]:
+                    df[col] = df[col].astype(float)
+                df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+
+                logging.info(f"✅ get_klines OK untuk {symbol} ({interval}) dari {url}")
+                return df
+
+            except requests.exceptions.Timeout:
+                logging.warning(f"⏱ Timeout ({attempt+1}/3) dari {url} untuk {symbol} ({interval}) — retrying...")
+                time.sleep(2)
+            except requests.exceptions.RequestException as e:
+                logging.error(f"[ERROR] Request gagal {symbol} ({interval}) dari {url}: {e}")
+                time.sleep(2)
+            except Exception as e:
+                logging.error(f"[ERROR] Parsing gagal {symbol} ({interval}) dari {url}: {e}")
+                time.sleep(2)
+
+        # lanjut ke endpoint berikutnya setelah 3 percobaan gagal
+        logging.warning(f"🚫 Gagal 3x di {url} untuk {symbol} ({interval}) — mencoba endpoint lain...")
+
+    # Semua endpoint gagal
+    logging.error(f"❌ Semua endpoint gagal untuk {symbol} ({interval})")
+    return pd.DataFrame()
 
 # === DETEKSI SINYAL ===
 def detect_signal(df):
