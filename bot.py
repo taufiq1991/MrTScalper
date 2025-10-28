@@ -51,7 +51,7 @@ def get_klines(symbol, interval="15m", limit=200):
     resolver.nameservers = ["1.1.1.1", "1.0.0.1"]
 
     domain = "api.binance.com"
-    url = f"https://{domain}/api/v3/klines"
+    url = f"https://www.{domain}/api/v3/klines"
     params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
 
     try:
