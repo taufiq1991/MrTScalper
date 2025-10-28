@@ -1,4 +1,4 @@
-KONFIGURASI logging
+import logging
 import os
 import sys
 import requests
