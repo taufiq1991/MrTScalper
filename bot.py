@@ -44,28 +44,44 @@ def send_message(msg):
         logging.error(f"[ERROR] Gagal kirim pesan Telegram: {e}")
 
 # === FUNGSI GET KLINES (BINANCE) ===
-def get_klines(symbol, interval="15m", limit=200):
-    try:
-        url = f"https://api.binance.com/api/v3/klines"
-        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+def get_klines(symbol, interval, limit=200, retries=3, pause=1.5):
+    """
+    Mengambil data candlestick (klines) dari Binance dengan fallback aman untuk GitHub Actions.
+    Gunakan mirror resmi data-api.binance.vision agar tidak terkena blokir (451).
+    """
+    base_url = "https://data-api.binance.vision/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
 
-        df = pd.DataFrame(data, columns=[
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_asset_volume", "trades",
-            "taker_base_volume", "taker_quote_volume", "ignore"
-        ])
+    for attempt in range(retries):
+        try:
+            resp = requests.get(base_url, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
 
-        df["open"] = df["open"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
-        df["close"] = df["close"].astype(float)
-        df["volume"] = df["volume"].astype(float)
-        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+            if not data:
+                logging.warning(f"Data kosong untuk {symbol}")
+                return pd.DataFrame()
 
-        return df
+            df = pd.DataFrame(data, columns=[
+                "open_time", "open", "high", "low", "close", "volume",
+                "close_time", "quote_asset_volume", "trades",
+                "taker_base_volume", "taker_quote_volume", "ignore"
+            ])
+
+            # konversi tipe data numerik
+            numeric_cols = ["open", "high", "low", "close", "volume"]
+            df[numeric_cols] = df[numeric_cols].astype(float)
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+            df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+
+            return df
+
+        except requests.exceptions.RequestException as e:
+            logging.error(f"get_klines gagal ({attempt+1}/{retries}) untuk {symbol} {interval}: {e}")
+            if attempt < retries - 1:
+                time.sleep(pause)
+            else:
+                return pd.DataFrame()
 
     except Exception as e:
         logging.error(f"[ERROR] get_klines gagal untuk {symbol} {interval}: {e}")
