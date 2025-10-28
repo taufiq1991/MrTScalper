@@ -65,7 +65,7 @@ def save_last_signals():
 # === GET KLINES (BINANCE) ===
 def get_klines(symbol, interval="15m", limit=200):
     try:
-        url = "https://api.binance.com/api/v3/klines"
+        url = "https://api.binance.me/api/v3/klines"
         params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
