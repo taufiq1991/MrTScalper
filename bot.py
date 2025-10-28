@@ -1,4 +1,4 @@
-import logging
+KONFIGURASI logging
 import os
 import sys
 import requests
@@ -73,6 +73,67 @@ def get_klines(symbol, interval="15m", limit=200):
         df["low"] = df["low"].astype(float)
         df["close"] = df["close"].astype(float)
         df["volume"] = df["volume"].astype(float)
+# === KONFIGURASI ===
+TIMEFRAMES = ["15m", "1h"]
+SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT",
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"
+]
+
+TP_MULTIPLIER = 1.5
+SL_MULTIPLIER = 1.0
+
+# Ambil token dari environment variables
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
+
+if not TELEGRAM_TOKEN or not CHAT_ID:
+    logging.error("Missing TELEGRAM_TOKEN or CHAT_ID in environment variables. Exiting.")
+    sys.exit(1)
+
+# === FUNGSI TELEGRAM ===
+def send_message(msg):
+    """Kirim pesan ke Telegram"""
+    try:
+        logging.info(f"Sending message to Telegram...")
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": msg,
+            "parse_mode": "Markdown",
+        }
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.status_code != 200:
+            logging.warning(f"Telegram API returned {resp.status_code}: {resp.text}")
+        else:
+            logging.info(f"Message sent successfully")
+    except Exception as e:
+        logging.error(f"[ERROR] Gagal kirim pesan Telegram: {e}")
+
+# === FUNGSI GET KLINES ===
+def get_klines(symbol, interval="15m", limit=200):
+    """
+    Ambil data candle dari Binance
+    """
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        df = pd.DataFrame(data, columns=[
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "trades",
+            "taker_base_volume", "taker_quote_volume", "ignore"
+        ])
+
+        df["open"] = df["open"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df["close"] = df["close"].astype(float)
+        df["volume"] = df["volume"].astype(float)
         df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
 
         return df
@@ -105,7 +166,7 @@ def detect_signal(df):
         kernel /= kernel.sum()
         return np.convolve(series, kernel, mode='same')
 
-    df["rsi_kernel"] = kernel_smooth(df["rsi"].fillna(method="bfill"))
+    df["rsi_kernel"] = kernel_smooth(df["rsi"].bfill())
     df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
 
     signal, strength, mode = None, None, None
@@ -139,7 +200,9 @@ def confirm_signal(symbol, signal_small_tf, signal_big_tf):
 
 # === FUNGSI UTAMA ===
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", stream=sys.stdout, force=True)
+    print("🚀 Bot starting...", flush=True)
+    logging.info("Bot starting...")
     send_message(f"🚀 Combo+Booster mode aktif\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}")
 
     total_signals = 0
@@ -199,3 +262,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+in()
