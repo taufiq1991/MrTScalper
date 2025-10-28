@@ -1,34 +1,37 @@
 import logging
 import os
 import sys
+import time
 import requests
 import numpy as np
 import pandas as pd
 import ta
-import dns.resolver
 from datetime import datetime
 
 # === KONFIGURASI ===
 TIMEFRAMES = ["15m", "1h"]
+
+# 🔹 10 Pair utama USDT
 SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT",
-    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT"
 ]
 
+# ATR multiplier untuk TP & SL
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
 
-# Ambil token dari environment variables
+# Ambil token dari environment variables (AMAN untuk CI / GitHub Actions)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
 if not TELEGRAM_TOKEN or not CHAT_ID:
-    logging.error("Missing TELEGRAM_TOKEN or CHAT_ID in environment variables. Exiting.")
+    logging.error("❌ Missing TELEGRAM_TOKEN or CHAT_ID in environment variables. Exiting.")
     sys.exit(1)
 
 # === FUNGSI TELEGRAM ===
 def send_message(msg):
-    """Kirim pesan ke Telegram"""
+    """Kirim pesan ke Telegram (tanpa menampilkan token)."""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
@@ -42,109 +45,46 @@ def send_message(msg):
     except Exception as e:
         logging.error(f"[ERROR] Gagal kirim pesan Telegram: {e}")
 
-# === FUNGSI GET KLINES (dengan DNS Cloudflare) ===
-def get_klines(symbol, interval="15m", limit=200):
+# === FUNGSI GET KLINES (BINANCE, DENGAN RETRY) ===
+def get_klines(symbol, interval="15m", limit=200, max_retries=3):
     """
-    Ambil data candle dari Binance menggunakan resolver DNS Cloudflare
+    Ambil data OHLC dari Binance API (v3).
+    Menyertakan mekanisme retry jika gagal koneksi sementara.
     """
-    resolver = dns.resolver.Resolver()
-    resolver.nameservers = ["1.1.1.1", "1.0.0.1"]
-
-    domain = "api.binance.com"
-    url = f"https://www.{domain}/api/v3/klines"
+    base_url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
 
-    try:
-        # Tes resolve dulu
-        resolver.resolve(domain, "A")
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(base_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
 
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+            df = pd.DataFrame(data, columns=[
+                "open_time", "open", "high", "low", "close", "volume",
+                "close_time", "quote_asset_volume", "trades",
+                "taker_base_volume", "taker_quote_volume", "ignore"
+            ])
 
-        df = pd.DataFrame(data, columns=[
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_asset_volume", "trades",
-            "taker_base_volume", "taker_quote_volume", "ignore"
-        ])
+            df["open"] = df["open"].astype(float)
+            df["high"] = df["high"].astype(float)
+            df["low"] = df["low"].astype(float)
+            df["close"] = df["close"].astype(float)
+            df["volume"] = df["volume"].astype(float)
+            df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
 
-        df["open"] = df["open"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
-        df["close"] = df["close"].astype(float)
-        df["volume"] = df["volume"].astype(float)
-# === KONFIGURASI ===
-TIMEFRAMES = ["15m", "1h"]
-SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT",
-    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"
-]
+            return df
 
-TP_MULTIPLIER = 1.5
-SL_MULTIPLIER = 1.0
+        except requests.RequestException as e:
+            logging.warning(f"[RETRY {attempt+1}/{max_retries}] get_klines gagal {symbol} {interval}: {e}")
+            time.sleep(2)
 
-# Ambil token dari environment variables
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
-
-if not TELEGRAM_TOKEN or not CHAT_ID:
-    logging.error("Missing TELEGRAM_TOKEN or CHAT_ID in environment variables. Exiting.")
-    sys.exit(1)
-
-# === FUNGSI TELEGRAM ===
-def send_message(msg):
-    """Kirim pesan ke Telegram"""
-    try:
-        logging.info(f"Sending message to Telegram...")
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": msg,
-            "parse_mode": "Markdown",
-        }
-        resp = requests.post(url, json=payload, timeout=10)
-        if resp.status_code != 200:
-            logging.warning(f"Telegram API returned {resp.status_code}: {resp.text}")
-        else:
-            logging.info(f"Message sent successfully")
-    except Exception as e:
-        logging.error(f"[ERROR] Gagal kirim pesan Telegram: {e}")
-
-# === FUNGSI GET KLINES ===
-def get_klines(symbol, interval="15m", limit=200):
-    """
-    Ambil data candle dari Binance
-    """
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        df = pd.DataFrame(data, columns=[
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_asset_volume", "trades",
-            "taker_base_volume", "taker_quote_volume", "ignore"
-        ])
-
-        df["open"] = df["open"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
-        df["close"] = df["close"].astype(float)
-        df["volume"] = df["volume"].astype(float)
-        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
-
-        return df
-
-    except Exception as e:
-        logging.error(f"[ERROR] get_klines gagal untuk {symbol} {interval}: {e}")
-        return pd.DataFrame()
+    logging.error(f"[ERROR] get_klines GAGAL total untuk {symbol} ({interval})")
+    return pd.DataFrame()
 
 # === FUNGSI DETEKSI SINYAL ===
 def detect_signal(df):
-    if len(df) < 20:
+    if df.empty:
         return None
 
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
@@ -157,17 +97,24 @@ def detect_signal(df):
     df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
     df["vwap_diff"] = df["close"] - df["vwap"]
 
+    if len(df) < 3:
+        return None
+
     last, prev = df.iloc[-1], df.iloc[-2]
     bullish_div = (last["close"] > prev["close"]) and (last["vwap_diff"] < prev["vwap_diff"])
     bearish_div = (last["close"] < prev["close"]) and (last["vwap_diff"] > prev["vwap_diff"])
 
+    # Kernel smoothing RSI
     def kernel_smooth(series, kernel_size=5):
         kernel = np.exp(-0.5 * (np.linspace(-2, 2, kernel_size) ** 2))
         kernel /= kernel.sum()
         return np.convolve(series, kernel, mode='same')
 
-    df["rsi_kernel"] = kernel_smooth(df["rsi"].bfill())
-    df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+    df["rsi_kernel"] = kernel_smooth(df["rsi"].fillna(method="bfill"))
+
+    df["atr"] = ta.volatility.AverageTrueRange(
+        df["high"], df["low"], df["close"], window=14
+    ).average_true_range()
 
     signal, strength, mode = None, None, None
     if bullish_div and df["rsi_kernel"].iloc[-1] < 40 and df["macd"].iloc[-1] > df["macd_signal"].iloc[-1]:
@@ -200,9 +147,7 @@ def confirm_signal(symbol, signal_small_tf, signal_big_tf):
 
 # === FUNGSI UTAMA ===
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", stream=sys.stdout, force=True)
-    print("🚀 Bot starting...", flush=True)
-    logging.info("Bot starting...")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     send_message(f"🚀 Combo+Booster mode aktif\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}")
 
     total_signals = 0
@@ -212,7 +157,7 @@ def main():
             df_big = get_klines(symbol, TIMEFRAMES[1])
 
             if df_small.empty or df_big.empty:
-                logging.warning(f"Data kosong untuk {symbol}")
+                logging.warning(f"⚠️ Data kosong untuk {symbol}")
                 continue
 
             res_small = detect_signal(df_small)
@@ -262,4 +207,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-in()
