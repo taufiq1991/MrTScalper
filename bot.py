@@ -62,19 +62,16 @@ def save_last_signals():
     except Exception as e:
         logging.error(f"Gagal menyimpan {LAST_SIGNALS_FILE}: {e}")
 
-# === GET KLINES (BINANCE) ===
+# === GET KLINES (Bybit) ===
 def get_klines(symbol, interval="15m", limit=200):
     """
-    Ambil data candlestick (klines) dari Binance.
+    Ambil data candlestick (klines) dari Bybit.
     Fitur:
     - Otomatis ganti endpoint jika diblokir (HTTP 451)
     - Retry otomatis hingga 3x per endpoint
     """
     endpoints = [
-        "https://api1.binance.com/api/v3/klines",   # Global mirror
-        "https://api2.binance.com/api/v3/klines",   # Asia mirror
-        "https://api.binance.me/api/v3/klines",     # Middle East
-        "https://fapi.binance.com/fapi/v1/klines"   # Futures API (backup)
+        "https://api.bybit.com/v5/market/kline"
     ]
 
     for url in endpoints:
