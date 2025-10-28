@@ -1,35 +1,29 @@
 import logging
 import os
 import sys
-import time
 import requests
 import numpy as np
 import pandas as pd
 import ta
+import dns.resolver
 from datetime import datetime
 
 # === KONFIGURASI ===
 TIMEFRAMES = ["15m", "1h"]
-
-# 🔹 10 Pair USDT yang dipantau
 SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
-    "SOLUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT"
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT",
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"
 ]
 
-# ATR multiplier untuk TP & SL
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
 
-# Delay antar-pair (dalam detik) untuk hindari rate limit
-REQUEST_DELAY = 2.0
-
-# Ambil token Telegram dari environment
+# Ambil token dari environment variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
 if not TELEGRAM_TOKEN or not CHAT_ID:
-    logging.error("❌ Missing TELEGRAM_TOKEN or CHAT_ID in environment variables. Exiting.")
+    logging.error("Missing TELEGRAM_TOKEN or CHAT_ID in environment variables. Exiting.")
     sys.exit(1)
 
 # === FUNGSI TELEGRAM ===
@@ -37,49 +31,61 @@ def send_message(msg):
     """Kirim pesan ke Telegram"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": msg,
+            "parse_mode": "Markdown",
+        }
         resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code != 200:
-            logging.warning(f"⚠️ Telegram API returned {resp.status_code}: {resp.text}")
+            logging.warning(f"Telegram API returned {resp.status_code}: {resp.text}")
     except Exception as e:
         logging.error(f"[ERROR] Gagal kirim pesan Telegram: {e}")
 
-# === FUNGSI GET KLINES (dengan fallback otomatis) ===
+# === FUNGSI GET KLINES (dengan DNS Cloudflare) ===
 def get_klines(symbol, interval="15m", limit=200):
-    base_urls = [
-        "https://api.binance.com/api/v3/klines",
-        "https://api.binance.vision/api/v3/klines"
-    ]
+    """
+    Ambil data candle dari Binance menggunakan resolver DNS Cloudflare
+    """
+    resolver = dns.resolver.Resolver()
+    resolver.nameservers = ["1.1.1.1", "1.0.0.1"]
 
-    for base_url in base_urls:
-        try:
-            params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-            response = requests.get(base_url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+    domain = "api.binance.com"
+    url = f"https://{domain}/api/v3/klines"
+    params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
 
-            df = pd.DataFrame(data, columns=[
-                "open_time", "open", "high", "low", "close", "volume",
-                "close_time", "quote_asset_volume", "trades",
-                "taker_base_volume", "taker_quote_volume", "ignore"
-            ])
+    try:
+        # Tes resolve dulu
+        resolver.resolve(domain, "A")
 
-            df["open"] = df["open"].astype(float)
-            df["high"] = df["high"].astype(float)
-            df["low"] = df["low"].astype(float)
-            df["close"] = df["close"].astype(float)
-            df["volume"] = df["volume"].astype(float)
-            df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
 
-            return df
-        except Exception as e:
-            logging.warning(f"⚠️ Gagal ambil data dari {base_url} untuk {symbol}: {e}")
+        df = pd.DataFrame(data, columns=[
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "trades",
+            "taker_base_volume", "taker_quote_volume", "ignore"
+        ])
 
-    logging.error(f"[ERROR] Semua endpoint gagal untuk {symbol} {interval}")
-    return pd.DataFrame()
+        df["open"] = df["open"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df["close"] = df["close"].astype(float)
+        df["volume"] = df["volume"].astype(float)
+        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+
+        return df
+
+    except Exception as e:
+        logging.error(f"[ERROR] get_klines gagal untuk {symbol} {interval}: {e}")
+        return pd.DataFrame()
 
 # === FUNGSI DETEKSI SINYAL ===
 def detect_signal(df):
+    if len(df) < 20:
+        return None
+
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
     df["ema50"] = ta.trend.EMAIndicator(df["close"], window=50).ema_indicator()
     macd = ta.trend.MACD(df["close"])
@@ -89,9 +95,6 @@ def detect_signal(df):
 
     df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
     df["vwap_diff"] = df["close"] - df["vwap"]
-
-    if len(df) < 3:
-        return None
 
     last, prev = df.iloc[-1], df.iloc[-2]
     bullish_div = (last["close"] > prev["close"]) and (last["vwap_diff"] < prev["vwap_diff"])
@@ -103,9 +106,7 @@ def detect_signal(df):
         return np.convolve(series, kernel, mode='same')
 
     df["rsi_kernel"] = kernel_smooth(df["rsi"].fillna(method="bfill"))
-    df["atr"] = ta.volatility.AverageTrueRange(
-        df["high"], df["low"], df["close"], window=14
-    ).average_true_range()
+    df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
 
     signal, strength, mode = None, None, None
     if bullish_div and df["rsi_kernel"].iloc[-1] < 40 and df["macd"].iloc[-1] > df["macd_signal"].iloc[-1]:
@@ -139,18 +140,16 @@ def confirm_signal(symbol, signal_small_tf, signal_big_tf):
 # === FUNGSI UTAMA ===
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    send_message(f"🚀 Combo+Booster aktif\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}")
+    send_message(f"🚀 Combo+Booster mode aktif\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}")
 
     total_signals = 0
     for symbol in SYMBOLS:
         try:
-            logging.info(f"🔍 Memindai {symbol} ...")
             df_small = get_klines(symbol, TIMEFRAMES[0])
             df_big = get_klines(symbol, TIMEFRAMES[1])
 
             if df_small.empty or df_big.empty:
-                logging.warning(f"⚠️ Data kosong untuk {symbol}")
-                time.sleep(REQUEST_DELAY)
+                logging.warning(f"Data kosong untuk {symbol}")
                 continue
 
             res_small = detect_signal(df_small)
@@ -193,12 +192,8 @@ def main():
                 send_message(msg)
                 logging.info(f"{symbol} {signal} ({strength}) {mode}")
 
-            # 🔹 Delay antar pair biar tidak kena rate limit
-            time.sleep(REQUEST_DELAY)
-
         except Exception as e:
-            logging.error(f"❌ Error {symbol}: {e}")
-            time.sleep(REQUEST_DELAY)
+            logging.error(f"Error {symbol}: {e}")
 
     send_message(f"✅ Scan selesai. {total_signals} sinyal ditemukan.")
 
