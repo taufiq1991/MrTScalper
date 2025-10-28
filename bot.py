@@ -1,4 +1,4 @@
-# bot.py
+ # bot.py
 import logging
 import os
 import sys
@@ -62,7 +62,7 @@ def save_last_signals():
     except Exception as e:
         logging.error(f"Gagal menyimpan {LAST_SIGNALS_FILE}: {e}")
 
-# === GET KLINES (Bybit) ===
+# === GET KLINES (Coingecko) ===
 def get_klines(symbol, interval="15m", limit=200):
     """
     Ambil data candlestick (klines) dari Bybit.
@@ -71,7 +71,7 @@ def get_klines(symbol, interval="15m", limit=200):
     - Retry otomatis hingga 3x per endpoint
     """
     endpoints = [
-        "https://api.bybit.com/v5/market/kline"
+        "https://api.coingecko.com/api/v3/"
     ]
 
     for url in endpoints:
