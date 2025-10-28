@@ -1,154 +1,192 @@
-#!/usr/bin/env python3
-import os
-import requests
-import pandas as pd
-import telegram
+# bot.py
 import logging
+import os
+import sys
+import requests
+import numpy as np
+import pandas as pd
+import ta
 from datetime import datetime
 
-# --- ENV Variabel ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-SYMBOLS = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,TRXUSDT,MATICUSDT").split(",")
-TIMEFRAMES = os.getenv("TIMEFRAMES", "1m,5m,15m").split(",")
+# === KONFIGURASI ===
+TIMEFRAMES = ["15m", "1h"]
+SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 
-if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-    raise SystemExit("❌ TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set")
+# ATR multiplier untuk TP & SL
+TP_MULTIPLIER = 1.5
+SL_MULTIPLIER = 1.0
 
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
+# Ambil token dari environment variables (AMAN untuk CI / GitHub Actions)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
-# --- Utility ---
-def send_message(text):
+if not TELEGRAM_TOKEN or not CHAT_ID:
+    logging.error("Missing TELEGRAM_TOKEN or CHAT_ID in environment variables. Exiting.")
+    sys.exit(1)
+
+# === FUNGSI TELEGRAM ===
+def send_message(msg):
+    """
+    Mengirim pesan ke Telegram menggunakan Bot API.
+    Tidak mencetak atau menyimpan token.
+    """
     try:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, parse_mode="Markdown")
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": msg,
+            "parse_mode": "Markdown",
+        }
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.status_code != 200:
+            logging.warning(f"Telegram API returned {resp.status_code}: {resp.text}")
     except Exception as e:
-        logging.error(f"Telegram send failed: {e}")
+        logging.error(f"[ERROR] Gagal kirim pesan Telegram: {e}")
 
-def get_klines(symbol, interval, limit=100):
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-    resp = requests.get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    df = pd.DataFrame(data, columns=[
-        "open_time","open","high","low","close","volume",
-        "close_time","qav","trades","tbbav","tbqav","ignore"
-    ])
-    df["close"] = pd.to_numeric(df["close"])
-    df["volume"] = pd.to_numeric(df["volume"])
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
-    return df
+# === FUNGSI GET KLINES (BINANCE) ===
+def get_klines(symbol, interval="15m", limit=200):
+    try:
+        url = f"https://api.binance.com/api/v3/klines"
+        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
 
-def ema(series, period): return series.ewm(span=period, adjust=False).mean()
+        df = pd.DataFrame(data, columns=[
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "trades",
+            "taker_base_volume", "taker_quote_volume", "ignore"
+        ])
 
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+        df["open"] = df["open"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df["close"] = df["close"].astype(float)
+        df["volume"] = df["volume"].astype(float)
+        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
 
-def macd(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    return macd_line, signal_line
+        return df
 
-# --- Deteksi sinyal utama + booster ---
+    except Exception as e:
+        logging.error(f"[ERROR] get_klines gagal untuk {symbol} {interval}: {e}")
+        return pd.DataFrame()
+
+# === FUNGSI DETEKSI SINYAL ===
 def detect_signal(df):
-    df["ema9"] = ema(df["close"], 9)
-    df["ema21"] = ema(df["close"], 21)
-    df["ema50"] = ema(df["close"], 50)
-    df["rsi14"] = rsi(df["close"], 14)
-    df["macd"], df["macd_signal"] = macd(df["close"])
+    df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+    df["ema50"] = ta.trend.EMAIndicator(df["close"], window=50).ema_indicator()
+    macd = ta.trend.MACD(df["close"])
+    df["macd"] = macd.macd()
+    df["macd_signal"] = macd.macd_signal()
+    df["volume_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
 
-    prev = df.iloc[-2]
-    last = df.iloc[-1]
+    df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
+    df["vwap_diff"] = df["close"] - df["vwap"]
 
-    # Filter volume
-    avg_vol = df["volume"].rolling(20).mean().iloc[-1]
-    vol_ratio = last["volume"] / avg_vol if avg_vol > 0 else 0
+    if len(df) < 3:
+        return None
 
-    signal, strength, mode = None, "Weak", "Normal"
-    score = 0
+    last, prev = df.iloc[-1], df.iloc[-2]
+    bullish_div = (last["close"] > prev["close"]) and (last["vwap_diff"] < prev["vwap_diff"])
+    bearish_div = (last["close"] < prev["close"]) and (last["vwap_diff"] > prev["vwap_diff"])
 
-    # --- BUY Combo ---
-    if prev["ema9"] <= prev["ema21"] and last["ema9"] > last["ema21"] and last["rsi14"] < 70:
-        signal = "BUY"
-        score += 1
-        if last["macd"] > last["macd_signal"]: score += 1
-        if vol_ratio > 1.2: score += 1
-        if last["close"] > last["ema50"]: score += 1
+    def kernel_smooth(series, kernel_size=5):
+        kernel = np.exp(-0.5 * (np.linspace(-2, 2, kernel_size) ** 2))
+        kernel /= kernel.sum()
+        return np.convolve(series, kernel, mode='same')
 
-    # --- SELL Combo ---
-    elif prev["ema9"] >= prev["ema21"] and last["ema9"] < last["ema21"] and last["rsi14"] > 30:
-        signal = "SELL"
-        score += 1
-        if last["macd"] < last["macd_signal"]: score += 1
-        if vol_ratio > 1.2: score += 1
-        if last["close"] < last["ema50"]: score += 1
+    df["rsi_kernel"] = kernel_smooth(df["rsi"].fillna(method="bfill"))
 
-    # --- Booster Early RSI ---
-    elif last["rsi14"] < 35 and last["close"] > last["ema9"]:
-        signal, mode, score = "BUY", "Booster (RSI Rebound)", 2
-    elif last["rsi14"] > 65 and last["close"] < last["ema9"]:
-        signal, mode, score = "SELL", "Booster (RSI Rebound)", 2
+    df["atr"] = ta.volatility.AverageTrueRange(
+        df["high"], df["low"], df["close"], window=14
+    ).average_true_range()
 
-    # --- Booster MACD Divergence ---
-    elif abs(last["macd"] - last["macd_signal"]) < 0.02:
-        if last["ema9"] > last["ema21"]: 
-            signal, mode, score = "BUY", "Booster (MACD Tight)", 2
-        elif last["ema9"] < last["ema21"]:
-            signal, mode, score = "SELL", "Booster (MACD Tight)", 2
+    signal, strength, mode = None, None, None
+    if bullish_div and df["rsi_kernel"].iloc[-1] < 40 and df["macd"].iloc[-1] > df["macd_signal"].iloc[-1]:
+        signal, mode = "BUY", "VWAP-RSI-Kernel"
+        strength = "Strong" if df["volume_ratio"].iloc[-1] > 1.5 else "Normal"
+    elif bearish_div and df["rsi_kernel"].iloc[-1] > 60 and df["macd"].iloc[-1] < df["macd_signal"].iloc[-1]:
+        signal, mode = "SELL", "VWAP-RSI-Kernel"
+        strength = "Strong" if df["volume_ratio"].iloc[-1] > 1.5 else "Normal"
 
     if signal:
-        if score >= 4: strength = "Strong"
-        elif score == 3: strength = "Medium"
-        else: strength = "Weak"
-
-        return signal, strength, mode, {
-            "rsi": last["rsi14"],
-            "macd": last["macd"],
-            "macd_signal": last["macd_signal"],
-            "volume_ratio": vol_ratio,
-            "ema50": last["ema50"]
+        details = {
+            "rsi": df["rsi_kernel"].iloc[-1],
+            "macd": df["macd"].iloc[-1],
+            "macd_signal": df["macd_signal"].iloc[-1],
+            "volume_ratio": df["volume_ratio"].iloc[-1],
+            "ema50": df["ema50"].iloc[-1],
+            "atr": df["atr"].iloc[-1],
         }
-
+        return signal, strength, mode, details
     return None
 
-# --- Main ---
+# === FUNGSI KONFIRMASI MULTI-TF ===
+def confirm_signal(symbol, signal_small_tf, signal_big_tf):
+    if not signal_small_tf or not signal_big_tf:
+        return None
+    if signal_small_tf[0] == signal_big_tf[0]:
+        signal, strength, mode, details = signal_small_tf
+        return signal, f"{strength}+Confirmed", f"{mode} MTF", details
+    return None
+
+# === FUNGSI UTAMA ===
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     send_message(f"🚀 Combo+Booster mode aktif\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}")
 
     total_signals = 0
     for symbol in SYMBOLS:
-        for tf in TIMEFRAMES:
-            try:
-                df = get_klines(symbol, tf)
-                result = detect_signal(df)
-                if result:
-                    signal, strength, mode, details = result
-                    total_signals += 1
-                    last = df.iloc[-1]
-                    emoji = "🟢" if signal == "BUY" else "🔴"
-                    msg = (
-                        f"{emoji} *{signal} Signal ({strength})*\n"
-                        f"Mode: `{mode}`\n"
-                        f"Pair: `{symbol}` | TF: `{tf}`\n"
-                        f"Close: {last['close']:.4f}\n"
-                        f"RSI14: {details['rsi']:.2f}\n"
-                        f"MACD: {details['macd']:.4f} | Signal: {details['macd_signal']:.4f}\n"
-                        f"Volume: {details['volume_ratio']:.2f}x rata-rata\n"
-                        f"EMA50: {details['ema50']:.2f}\n"
-                        f"Time: {last['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
-                        "_Info only — no auto order._"
-                    )
-                    send_message(msg)
-                    logging.info(f"{symbol} {tf} {signal} ({strength}) {mode}")
-            except Exception as e:
-                logging.error(f"Error {symbol} {tf}: {e}")
+        try:
+            df_small = get_klines(symbol, TIMEFRAMES[0])
+            df_big = get_klines(symbol, TIMEFRAMES[1])
+
+            if df_small.empty or df_big.empty:
+                logging.warning(f"Data kosong untuk {symbol}")
+                continue
+
+            res_small = detect_signal(df_small)
+            res_big = detect_signal(df_big)
+            result = confirm_signal(symbol, res_small, res_big)
+
+            if result:
+                signal, strength, mode, details = result
+                total_signals += 1
+                last = df_small.iloc[-1]
+                close_price = last["close"]
+                atr = details["atr"]
+
+                if signal == "BUY":
+                    entry = close_price
+                    tp = entry + (atr * TP_MULTIPLIER)
+                    sl = entry - (atr * SL_MULTIPLIER)
+                    emoji = "🟢"
+                else:
+                    entry = close_price
+                    tp = entry - (atr * TP_MULTIPLIER)
+                    sl = entry + (atr * SL_MULTIPLIER)
+                    emoji = "🔴"
+
+                msg = (
+                    f"{emoji} *{signal} Signal ({strength})*\n"
+                    f"Mode: `{mode}`\n"
+                    f"Pair: `{symbol}` | TF: `{TIMEFRAMES[0]} & {TIMEFRAMES[1]}`\n"
+                    f"Entry: `{entry:.4f}`\n"
+                    f"TP: `{tp:.4f}` | SL: `{sl:.4f}`\n"
+                    f"ATR: {atr:.4f}\n"
+                    f"RSI-Kernel: {details['rsi']:.2f}\n"
+                    f"MACD: {details['macd']:.4f} | Signal: {details['macd_signal']:.4f}\n"
+                    f"Volume: {details['volume_ratio']:.2f}x rata-rata\n"
+                    f"EMA50: {details['ema50']:.2f}\n"
+                    f"Time: {last['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
+                    "_Info only — no auto order._"
+                )
+
+                send_message(msg)
+                logging.info(f"{symbol} {signal} ({strength}) {mode}")
+
+        except Exception as e:
+            logging.error(f"Error {symbol}: {e}")
 
     send_message(f"✅ Scan selesai. {total_signals} sinyal ditemukan.")
 
