@@ -1,4 +1,3 @@
-# bot.py
 import logging
 import os
 import sys
@@ -10,7 +9,20 @@ from datetime import datetime
 
 # === KONFIGURASI ===
 TIMEFRAMES = ["15m", "1h"]
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+
+# 🔹 10 Pair USDT yang populer
+SYMBOLS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "SOLUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "DOTUSDT",
+    "LINKUSDT"
+]
 
 # ATR multiplier untuk TP & SL
 TP_MULTIPLIER = 1.5
@@ -26,10 +38,7 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
 
 # === FUNGSI TELEGRAM ===
 def send_message(msg):
-    """
-    Mengirim pesan ke Telegram menggunakan Bot API.
-    Tidak mencetak atau menyimpan token.
-    """
+    """Mengirim pesan ke Telegram menggunakan Bot API."""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
@@ -43,45 +52,34 @@ def send_message(msg):
     except Exception as e:
         logging.error(f"[ERROR] Gagal kirim pesan Telegram: {e}")
 
-# === FUNGSI GET KLINES (BINANCE) ===
-def get_klines(symbol, interval, limit=200, retries=3, pause=1.5):
-    """
-    Mengambil data candlestick (klines) dari Binance dengan fallback aman untuk GitHub Actions.
-    Gunakan mirror resmi data-api.binance.vision agar tidak terkena blokir (451).
-    """
-    base_url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+# === FUNGSI GET KLINES (BINANCE VISION) ===
+def get_klines(symbol, interval="15m", limit=200):
+    try:
+        url = f"https://api.binance.vision/api/v3/klines"
+        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
 
-    for attempt in range(retries):
-        try:
-            resp = requests.get(base_url, params=params, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
+        df = pd.DataFrame(data, columns=[
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "trades",
+            "taker_base_volume", "taker_quote_volume", "ignore"
+        ])
 
-            if not data:
-                logging.warning(f"Data kosong untuk {symbol}")
-                return pd.DataFrame()
+        df["open"] = df["open"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df["close"] = df["close"].astype(float)
+        df["volume"] = df["volume"].astype(float)
+        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
 
-            df = pd.DataFrame(data, columns=[
-                "open_time", "open", "high", "low", "close", "volume",
-                "close_time", "quote_asset_volume", "trades",
-                "taker_base_volume", "taker_quote_volume", "ignore"
-            ])
+        return df
 
-            # konversi tipe data numerik
-            numeric_cols = ["open", "high", "low", "close", "volume"]
-            df[numeric_cols] = df[numeric_cols].astype(float)
-            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-            df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+    except Exception as e:
+        logging.error(f"[ERROR] get_klines gagal untuk {symbol} {interval}: {e}")
+        return pd.DataFrame()
 
-            return df
-
-        except requests.exceptions.RequestException as e:
-            logging.error(f"get_klines gagal ({attempt+1}/{retries}) untuk {symbol} {interval}: {e}")
-            if attempt < retries - 1:
-                time.sleep(pause)
-            else:
-                return pd.DataFrame()
 # === FUNGSI DETEKSI SINYAL ===
 def detect_signal(df):
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
@@ -107,7 +105,6 @@ def detect_signal(df):
         return np.convolve(series, kernel, mode='same')
 
     df["rsi_kernel"] = kernel_smooth(df["rsi"].fillna(method="bfill"))
-
     df["atr"] = ta.volatility.AverageTrueRange(
         df["high"], df["low"], df["close"], window=14
     ).average_true_range()
