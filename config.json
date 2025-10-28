@@ -23,5 +23,6 @@
     "AAVEUSDT"
   ],
   "tp_multiplier": 1.5,
-  "sl_multiplier": 1.0
+  "sl_multiplier": 1.0,
+  "scan_interval_minutes": 5
 }
